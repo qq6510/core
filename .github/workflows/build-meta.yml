@@ -27,7 +27,7 @@ jobs:
         uses: actions/checkout@main
         with:
           repository: MetaCubeX/mihomo
-          ref: Meta
+          ref: refs/tags/v1.19.11
           fetch-depth: 1
 
       - name: Setup Go
