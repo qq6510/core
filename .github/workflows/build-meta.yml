@@ -1,103 +1,143 @@
-name: Compile and Push Meta Core
+name: Compile, Compress and Push Meta Core
 
+# 触发条件：手动触发 (在 GitHub Actions 页面点击 "Run workflow")
 on:
   workflow_dispatch:
 
 jobs:
-  # 阶段一：并行编译并打包为 tar.gz
+  # 阶段一：并行编译各个架构的二进制文件，并进行 UPX 压缩和打包
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
+      # fail-fast 设置为 false，即使其中一个架构编译失败，也不会取消其他架构的编译
       fail-fast: false
       matrix:
+        # 定义需要编译的目标平台和架构 (对应 OpenWrt 常见路由器)
         include:
           - goos: linux
-            goarch: amd64
+            goarch: amd64    # 适用于 x86_64 软路由 (如 J4125, N100)
           - goos: linux
-            goarch: arm64
+            goarch: arm64    # 适用于 ARMv8 架构 (如 R2S, R4S, 树莓派 3/4/5)
           - goos: linux
             goarch: arm
-            goarm: 7
+            goarm: 7         # 适用于 ARMv7 架构 (多数主流硬路由，如华硕 AC86U)
           - goos: linux
             goarch: mipsle
-            gomips: softfloat
+            gomips: softfloat # 适用于常见 MIPS 架构 (如 斐讯 K2P 等 MTK 芯片设备)
 
     steps:
+      # 1. 检出 Mihomo 源码 (使用指定的仓库和分支)
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          repository: MetaCubeX/mihomo
-          ref: Meta
-          fetch-depth: 1
+          repository: MetaCubeX/mihomo  # 目标源码仓库
+          ref: Meta                     # 目标分支 (Mihomo 的 Meta 分支)
+          fetch-depth: 1                # 浅克隆，加快速度
 
+      # 2. 设置 Go 语言编译环境
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.22'            # 使用较新的 Go 版本
           check-latest: true
 
-      - name: Build and Compress
+      # 3. 安装 UPX 压缩工具
+      - name: Install UPX
+        run: sudo apt-get update && sudo apt-get install -y upx-ucl
+
+      # 4. 执行编译、压缩并打包
+      - name: Build, UPX and Package
         env:
-          CGO_ENABLED: 0
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
-          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: 0               # 禁用 CGO，进行静态编译 (适合路由器)
+          GOOS: ${{ matrix.goos }}     # 目标操作系统 (linux)
+          GOARCH: ${{ matrix.goarch }} # 目标 CPU 架构
+          GOARM: ${{ matrix.goarm }}   # 目标 ARM 版本 (可选)
+          GOMIPS: ${{ matrix.gomips }} # 目标 MIPS 版本 (可选)
         run: |
-          # 1. 确定架构后缀名称 (例如 linux-arm64)
+          # A. 确定架构后缀名称 (严格按照 OpenClash 的识别标准拼接)
+          # 例如: linux-amd64, linux-armv7, linux-mipsle-softfloat
           ARCH_SUFFIX="${GOOS}-${GOARCH}"
-          [ -n "${GOARM}" ] && ARCH_SUFFIX="${ARCH_SUFFIX}v${GOARM}"
+          if [ -n "${GOARM}" ]; then
+            ARCH_SUFFIX="${ARCH_SUFFIX}v${GOARM}"
+          elif [ -n "${GOMIPS}" ]; then
+            ARCH_SUFFIX="${ARCH_SUFFIX}-${GOMIPS}"
+          fi
           
-          echo "正在编译: $ARCH_SUFFIX"
+          echo "正在编译架构: $ARCH_SUFFIX"
           
-          # 2. 编译出纯净的二进制文件，命名为 clash（OpenClash 解压时通常识别这个名字）
+          # B. 编译出纯净的二进制文件
+          # 名字固定为 clash，这是 OpenClash 插件解压后期望看到的文件名
+          # -trimpath 去除绝对路径; -ldflags="-s -w" 去除调试信息，进一步减小体积
           go build -trimpath -ldflags="-s -w -buildid=" -o clash .
           
-          # 3. 将编译好的 clash 二进制文件打包为 tar.gz
+          echo "编译完成，开始执行 UPX 压缩..."
+          
+          # C. 使用 UPX 进行极限压缩
+          # 注意：MIPS 架构(mipsle) 部分老设备对 lzma 算法兼容性不佳，因此单独处理
+          if [[ "${GOARCH}" == *"mips"* ]]; then
+            upx --best clash         # MIPS 架构使用 --best 压缩
+          else
+            upx --lzma --best clash  # 其他架构使用 --lzma --best 极限压缩
+          fi
+          
+          # D. 将压缩后的 clash 二进制文件打包为 .tar.gz 格式
           TAR_NAME="clash-${ARCH_SUFFIX}.tar.gz"
           tar -czvf $TAR_NAME clash
           
-          echo "打包完成: $TAR_NAME"
+          echo "打包成功: $TAR_NAME"
 
-      # 将打包好的 tar.gz 暂存，供第二阶段使用
+      # 5. 将打包好的 tar.gz 文件暂存为 Artifact，供第二阶段(push_to_repo)使用
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: core-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
-          path: "*.tar.gz"
-          retention-days: 1
+          path: "*.tar.gz"           # 只上传生成的 tar.gz 文件
+          retention-days: 1          # Artifact 保留 1 天即可 (因为马上要推送到仓库了)
 
-  # 阶段二：将所有压缩包收集并推送到你自己的 GitHub 仓库
+  # 阶段二：收集第一阶段生成的压缩包，并自动推送到你自己的 GitHub 仓库
   push_to_repo:
-    name: Push to repository
-    needs: build
+    name: Push binaries to repository
+    needs: build                     # 必须等待 build 阶段的所有任务全部成功后才运行
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 必须要有写入权限才能推送到仓库
+      contents: write                # 核心权限：赋予 Action 推送代码到当前仓库的权限
 
     steps:
+      # 1. 检出你自己的当前仓库 (因为我们要往里写文件)
       - name: Checkout Current Repository
         uses: actions/checkout@v4
 
+      # 2. 在你的仓库根目录下创建 mihomo 文件夹
       - name: Create Target Directory
         run: mkdir -p mihomo
 
+      # 3. 下载第一阶段生成的所有二进制压缩包，统一存放到 mihomo 目录下
       - name: Download Built Binaries
         uses: actions/download-artifact@v4
         with:
-          path: mihomo/
-          merge-multiple: true # 将所有架构的 tar.gz 下载到同一个 mihomo 文件夹
+          path: mihomo/              # 下载目标路径
+          merge-multiple: true       # 将所有架构的文件合并放在一起
 
+      # 4. 提交更改并推送到仓库
       - name: Commit and Push
         run: |
-          # 配置 git 机器人账号
+          # 检查目录内容 (用于调试，可在日志中查看是否成功下载了文件)
+          echo "查看 mihomo 目录下的文件："
+          ls -la mihomo/
+          
+          # 配置 git 机器人账号 (GitHub Actions 默认机器人)
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # 添加新生成的压缩包并提交
+          # 将新生成的文件添加到 Git 暂存区
           git add mihomo/
-          git commit -m "Auto-update Mihomo tar.gz binaries" || echo "No changes to commit"
           
-          # 推送回你的仓库
+          # 查看 git 状态
+          git status
+          
+          # 提交更改 (如果文件没有变化，则跳过提交，避免报错退出)
+          git commit -m "Auto-update Mihomo Core (OpenWrt Compatible & UPX Compressed)" || echo "No changes to commit"
+          
+          # 推送到你的远程仓库
           git push
