@@ -1,48 +1,44 @@
-name: Compile Meta (Mihomo) Core
+name: Compile and Push Meta Core
 
-# 触发条件：支持手动点击运行，也可以取消注释 push 让其每次提交自动运行
+# 触发条件：手动触发
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [ main ]
 
 jobs:
+  # 阶段一：并行编译各个架构的二进制文件
   build:
-    name: Build for ${{ matrix.goos }}/${{ matrix.goarch }}
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # 在这里配置你需要编译的路由器 CPU 架构
         include:
           - goos: linux
-            goarch: amd64    # 常见的 x86_64 软路由
+            goarch: amd64
           - goos: linux
-            goarch: arm64    # 常见的 ARMv8 架构 (如 R2S, 树莓派)
+            goarch: arm64
           - goos: linux
             goarch: arm
-            goarm: 7         # ARMv7 架构 (多数普通 ARM 路由器)
+            goarm: 7
           - goos: linux
             goarch: mipsle
-            gomips: softfloat # 常见的 MIPS 架构 (如 斐讯 K2P)
+            gomips: softfloat
 
     steps:
-      # 1. 检出源码：这里直接指向你需要编译的 Meta 仓库和分支
+      # 检出源码（拉取你要编译的 Meta 仓库和分支）
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          repository: MetaCubeX/mihomo  # 【修改这里】如果需要使用其他人的 fork，修改为 "用户名/仓库名"
-          ref: Meta                     # 【修改这里】指定你要编译的分支，比如 "Meta" 或 "Alpha"
+          repository: MetaCubeX/mihomo  # 【可修改】源码仓库
+          ref: Meta                     # 【可修改】分支名
           fetch-depth: 1
 
-      # 2. 设置 Go 语言环境
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22' # 推荐使用较新的 Go 版本以获得更好的性能优化
+          go-version: '1.22'
           check-latest: true
 
-      # 3. 执行交叉编译
       - name: Build Binary
         env:
           CGO_ENABLED: 0
@@ -53,19 +49,54 @@ jobs:
         run: |
           echo "正在编译架构: $GOOS/$GOARCH"
           
-          # 定义输出文件名，例如 clash_meta-linux-amd64
           OUTPUT_NAME="clash_meta-${{ matrix.goos }}-${{ matrix.goarch }}"
           [ -n "${{ matrix.goarm }}" ] && OUTPUT_NAME="${OUTPUT_NAME}v${{ matrix.goarm }}"
           
-          # 执行编译，使用 -trimpath 和 -ldflags 减小体积并去除调试信息
           go build -trimpath -ldflags="-s -w -buildid=" -o $OUTPUT_NAME .
-          
-          echo "编译完成: $OUTPUT_NAME"
 
-      # 4. 上传编译好的二进制文件到 GitHub Actions 的 Artifacts
+      # 将编译好的文件暂存
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: clash_meta-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
+          name: core-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
           path: clash_meta-*
-          retention-days: 7 # 生成的文件保留 7 天
+          retention-days: 1
+
+  # 阶段二：收集文件并推送到仓库的 mihomo 文件夹
+  push_to_repo:
+    name: Push binaries to repository
+    needs: build # 必须等待 build 阶段全部成功后才运行
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # 赋予 GitHub Actions 推送代码的权限
+
+    steps:
+      # 检出你自己的当前仓库
+      - name: Checkout Current Repository
+        uses: actions/checkout@v4
+
+      # 创建 mihomo 目录
+      - name: Create Target Directory
+        run: mkdir -p mihomo
+
+      # 下载阶段一生成的所有二进制文件到 mihomo 目录中
+      - name: Download Built Binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: mihomo/
+          merge-multiple: true # 将所有不同架构的文件合并放到同一个 mihomo 目录下
+
+      # 提交并推送到当前仓库
+      - name: Commit and Push
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # 将 mihomo 文件夹添加到 git
+          git add mihomo/
+          
+          # 提交更改 (如果没有新变化则跳过提交，防止报错)
+          git commit -m "Auto-update Mihomo compiled binaries" || echo "No changes to commit"
+          
+          # 推送到仓库
+          git push
