@@ -1,11 +1,10 @@
 name: Compile and Push Meta Core
 
-# 触发条件：手动触发
 on:
   workflow_dispatch:
 
 jobs:
-  # 阶段一：并行编译各个架构的二进制文件
+  # 阶段一：并行编译并打包为 tar.gz
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     runs-on: ubuntu-latest
@@ -25,12 +24,11 @@ jobs:
             gomips: softfloat
 
     steps:
-      # 检出源码（拉取你要编译的 Meta 仓库和分支）
       - name: Checkout Source Code
         uses: actions/checkout@v4
         with:
-          repository: MetaCubeX/mihomo  # 【可修改】源码仓库
-          ref: Meta                     # 【可修改】分支名
+          repository: MetaCubeX/mihomo
+          ref: Meta
           fetch-depth: 1
 
       - name: Setup Go
@@ -39,7 +37,7 @@ jobs:
           go-version: '1.22'
           check-latest: true
 
-      - name: Build Binary
+      - name: Build and Compress
         env:
           CGO_ENABLED: 0
           GOOS: ${{ matrix.goos }}
@@ -47,56 +45,59 @@ jobs:
           GOARM: ${{ matrix.goarm }}
           GOMIPS: ${{ matrix.gomips }}
         run: |
-          echo "正在编译架构: $GOOS/$GOARCH"
+          # 1. 确定架构后缀名称 (例如 linux-arm64)
+          ARCH_SUFFIX="${GOOS}-${GOARCH}"
+          [ -n "${GOARM}" ] && ARCH_SUFFIX="${ARCH_SUFFIX}v${GOARM}"
           
-          OUTPUT_NAME="clash_meta-${{ matrix.goos }}-${{ matrix.goarch }}"
-          [ -n "${{ matrix.goarm }}" ] && OUTPUT_NAME="${OUTPUT_NAME}v${{ matrix.goarm }}"
+          echo "正在编译: $ARCH_SUFFIX"
           
-          go build -trimpath -ldflags="-s -w -buildid=" -o $OUTPUT_NAME .
+          # 2. 编译出纯净的二进制文件，命名为 clash（OpenClash 解压时通常识别这个名字）
+          go build -trimpath -ldflags="-s -w -buildid=" -o clash .
+          
+          # 3. 将编译好的 clash 二进制文件打包为 tar.gz
+          TAR_NAME="clash-${ARCH_SUFFIX}.tar.gz"
+          tar -czvf $TAR_NAME clash
+          
+          echo "打包完成: $TAR_NAME"
 
-      # 将编译好的文件暂存
+      # 将打包好的 tar.gz 暂存，供第二阶段使用
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: core-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.goarm }}
-          path: clash_meta-*
+          path: "*.tar.gz"
           retention-days: 1
 
-  # 阶段二：收集文件并推送到仓库的 mihomo 文件夹
+  # 阶段二：将所有压缩包收集并推送到你自己的 GitHub 仓库
   push_to_repo:
-    name: Push binaries to repository
-    needs: build # 必须等待 build 阶段全部成功后才运行
+    name: Push to repository
+    needs: build
     runs-on: ubuntu-latest
     permissions:
-      contents: write # 赋予 GitHub Actions 推送代码的权限
+      contents: write # 必须要有写入权限才能推送到仓库
 
     steps:
-      # 检出你自己的当前仓库
       - name: Checkout Current Repository
         uses: actions/checkout@v4
 
-      # 创建 mihomo 目录
       - name: Create Target Directory
         run: mkdir -p mihomo
 
-      # 下载阶段一生成的所有二进制文件到 mihomo 目录中
       - name: Download Built Binaries
         uses: actions/download-artifact@v4
         with:
           path: mihomo/
-          merge-multiple: true # 将所有不同架构的文件合并放到同一个 mihomo 目录下
+          merge-multiple: true # 将所有架构的 tar.gz 下载到同一个 mihomo 文件夹
 
-      # 提交并推送到当前仓库
       - name: Commit and Push
         run: |
+          # 配置 git 机器人账号
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # 将 mihomo 文件夹添加到 git
+          # 添加新生成的压缩包并提交
           git add mihomo/
+          git commit -m "Auto-update Mihomo tar.gz binaries" || echo "No changes to commit"
           
-          # 提交更改 (如果没有新变化则跳过提交，防止报错)
-          git commit -m "Auto-update Mihomo compiled binaries" || echo "No changes to commit"
-          
-          # 推送到仓库
+          # 推送回你的仓库
           git push
