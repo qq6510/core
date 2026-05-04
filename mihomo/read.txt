@@ -1,1 +1,7 @@
-mihomo文件
+
+- name: Checkout Source Code
+        uses: actions/checkout@main
+        with:
+          repository: MetaCubeX/mihomo
+          ref: refs/tags/v1.18.3 # <--- 修改这里！指定具体的版本 Tag
+          fetch-depth: 1
