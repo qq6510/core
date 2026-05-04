@@ -27,13 +27,6 @@ mipsle-softfloat (常见 MIPS 老款路由器，如斐讯、MTK 设备)
 
 拉取源码：自动从 MetaCubeX/mihomo 的 Meta 分支拉取最新代码。
 
-- name: Checkout Source Code
-        uses: actions/checkout@main
-        with:
-          repository: MetaCubeX/mihomo
-          ref: refs/tags/v1.18.3 # <--- 修改这里！指定具体的版本 Tag
-          fetch-depth: 1
-
 环境准备：配置 Go 1.22 编译环境并安装 UPX 压缩工具。
 
 构建与打包：按架构交叉编译 -> UPX 压缩 -> 打包为 clash-{arch}.tar.gz -> 暂存为 Artifacts。
