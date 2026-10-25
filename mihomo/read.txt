@@ -5,3 +5,5 @@
           repository: MetaCubeX/mihomo
           ref: refs/tags/v1.19.30 # <--- 修改这里！指定具体的版本 Tag
           fetch-depth: 1
+
+从 v1.19.13 升级到 v1.19.30 
