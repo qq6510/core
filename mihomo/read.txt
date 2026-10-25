@@ -3,5 +3,5 @@
         uses: actions/checkout@main
         with:
           repository: MetaCubeX/mihomo
-          ref: refs/tags/v1.19.13 # <--- 修改这里！指定具体的版本 Tag
+          ref: refs/tags/v1.19.30 # <--- 修改这里！指定具体的版本 Tag
           fetch-depth: 1
